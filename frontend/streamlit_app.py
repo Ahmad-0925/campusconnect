@@ -626,7 +626,7 @@ def send_status_email(to, c, status, remarks):
     try:
         user, pw = st.secrets["SMTP_USER"], st.secrets["SMTP_PASS"]
     except Exception:
-        return False
+        return False, "SMTP secrets not found"
     try:
         msg = _Msg()
         msg["Subject"] = f"CampusConnect: update on your complaint #{c['id'][:8]}"
@@ -641,9 +641,9 @@ def send_status_email(to, c, status, remarks):
         with _smtp.SMTP_SSL("smtp.gmail.com", 465, timeout=15) as srv:
             srv.login(user, pw)
             srv.send_message(msg)
-        return True
-    except Exception:
-        return False
+        return True, ""
+    except Exception as e:
+        return False, f"{type(e).__name__}: {str(e)[:120]}"
 
 def student_view():
     page_header("Student Portal", "Submit complaints and follow their progress.")
@@ -853,8 +853,12 @@ def admin_view():
                         if api("PATCH", f"/admin/complaints/{c['id']}",
                                {"status": ns, "remarks": rm or None}):
                             to = notify_email_of(c.get("description"))
-                            sent = send_status_email(to, c, ns, rm) if to else False
-                            ss["flash"] = ("Updated. Student notified by email." if sent else "Updated.")
+                            if not to:
+                                ss["flash"] = "Updated. (No notification email was entered for this complaint.)"
+                            else:
+                                ok, why = send_status_email(to, c, ns, rm)
+                                ss["flash"] = (f"Updated. Student notified by email at {to}." if ok
+                                               else f"Updated. Email failed: {why}")
                             st.rerun()
     footer()
 
