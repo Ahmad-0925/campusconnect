@@ -612,6 +612,39 @@ def leaderboard_html(rows):
 
 DEPARTMENTS_UI = ["Cafeteria", "Library", "Laboratory/IT", "Teaching/Academic"]
 
+
+# ---------------- Email notification (Gmail SMTP, optional) ----------------
+import smtplib as _smtp
+from email.message import EmailMessage as _Msg
+EMAIL_RE = _re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
+
+def notify_email_of(desc):
+    m = _re.search(r"\[Notify:\s*(" + EMAIL_RE.pattern + r")\]", desc or "")
+    return m.group(1) if m else None
+
+def send_status_email(to, c, status, remarks):
+    try:
+        user, pw = st.secrets["SMTP_USER"], st.secrets["SMTP_PASS"]
+    except Exception:
+        return False
+    try:
+        msg = _Msg()
+        msg["Subject"] = f"CampusConnect: update on your complaint #{c['id'][:8]}"
+        msg["From"] = f"CampusConnect <{user}>"
+        msg["To"] = to
+        msg.set_content(
+            f"Hello,\n\nThere is an update on your complaint \"{c['title']}\".\n\n"
+            f"Status: {status.replace('_', ' ').title()}\n"
+            f"Department: {c['department']}\n"
+            f"Response: {remarks or 'No remarks yet.'}\n\n"
+            f"Log in to CampusConnect to see the full details.\n\n- CampusConnect Team")
+        with _smtp.SMTP_SSL("smtp.gmail.com", 465, timeout=15) as srv:
+            srv.login(user, pw)
+            srv.send_message(msg)
+        return True
+    except Exception:
+        return False
+
 def student_view():
     page_header("Student Portal", "Submit complaints and follow their progress.")
     t1, t2 = st.tabs(["📝  New Complaint", "📂  My Complaints"])
@@ -630,6 +663,10 @@ def student_view():
         desc = st.text_area("Details", height=150, key=f"nc_desc_{n}",
                             placeholder="What happened, where and when? (min. 10 characters)")
         img = st.text_input("Supporting image link (optional)", placeholder="https://...", key=f"nc_img_{n}")
+        notify = st.text_input("Notify me by email when the department responds (optional)",
+                               placeholder="any email address", key=f"nc_mail_{n}")
+        if notify and not EMAIL_RE.fullmatch(notify.strip()):
+            st.caption("⚠️ This email address looks invalid and will be ignored.")
         tri = None
         try:
             tri = triage(f"{title} {desc}", mine)
@@ -641,6 +678,8 @@ def student_view():
             body = desc
             if tri:
                 body = f"{desc}\n\n[Smart Triage: {tri['prio']} priority | tone: {tri['tone']} | quality {tri['quality']}/100]"
+            if notify and EMAIL_RE.fullmatch(notify.strip()):
+                body = f"{body}\n[Notify: {notify.strip()}]"
             d = api("POST", "/complaints", {
                 "category": cat, "title": title,
                 "description": body, "image_url": img or None})
@@ -690,6 +729,8 @@ def admin_view():
         page_header(f"{ss.user.get('department')} Administration",
                     "Complaints assigned to your department.")
     t1, t2 = st.tabs(["📊  Dashboard & Reports", "🗂️  Manage Complaints"])
+    if ss.get("flash"):
+        st.success(ss.pop("flash"))
 
     with t1:
         s = api("GET", "/admin/stats")
@@ -811,7 +852,9 @@ def admin_view():
                     if st.form_submit_button("Save update", type="primary"):
                         if api("PATCH", f"/admin/complaints/{c['id']}",
                                {"status": ns, "remarks": rm or None}):
-                            st.success("Updated")
+                            to = notify_email_of(c.get("description"))
+                            sent = send_status_email(to, c, ns, rm) if to else False
+                            ss["flash"] = ("Updated. Student notified by email." if sent else "Updated.")
                             st.rerun()
     footer()
 
