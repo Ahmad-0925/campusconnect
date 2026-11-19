@@ -141,6 +141,23 @@ h5 { font-weight: 700; color: #0F172A; margin-bottom: .2rem; }
 .sb-foot { color: #7F9CD6; font-size: .72rem; margin-top: 26px; line-height: 1.5; }
 
 .cc-footer { text-align: center; color: #94A3B8; font-size: .78rem; margin-top: 34px; }
+/* ---------- insights + alerts ---------- */
+.ins { display: flex; gap: 12px; align-items: flex-start; padding: 10px 0; border-bottom: 1px solid #EEF2F7;
+  font-size: .93rem; color: #1E293B; line-height: 1.45; }
+.ins:last-child { border-bottom: none; }
+.ins .ic { font-size: 1.05rem; width: 26px; flex: none; text-align: center; }
+.alert-red { background: #FEF2F2; border: 1px solid #FECACA; color: #991B1B; border-radius: 10px;
+  padding: 10px 14px; font-weight: 700; font-size: .92rem; margin-bottom: 8px; }
+.alert-green { background: #F0FDF4; border: 1px solid #BBF7D0; color: #166534; border-radius: 10px;
+  padding: 12px 14px; font-weight: 600; font-size: .92rem; }
+.ovd { display: flex; justify-content: space-between; gap: 10px; padding: 9px 0; border-bottom: 1px solid #EEF2F7; }
+.ovd:last-child { border-bottom: none; }
+.ovd .t { font-weight: 600; color: #0F172A; font-size: .9rem; }
+.ovd .m { color: #64748B; font-size: .78rem; margin-top: 1px; }
+.ovd .age { background: #FEE2E2; color: #991B1B; font-weight: 700; border-radius: 999px; padding: 3px 11px;
+  font-size: .76rem; white-space: nowrap; align-self: center; }
+[data-testid="stSidebar"] label, [data-testid="stSidebar"] label p { color: #C7D8FF !important; font-size: .82rem; }
+.sb-sec { color: #7F9CD6; font-size: .7rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; margin: 6px 0 2px; }
 </style>
 """)
 st.markdown(CSS, unsafe_allow_html=True)
@@ -255,6 +272,130 @@ def status_donut(by_status):
 def footer():
     st.markdown('<div class="cc-footer">CampusConnect · Smart Campus Complaint &amp; Feedback '
                 'Management · BIIT Software Engineering Society</div>', unsafe_allow_html=True)
+
+
+
+# ======================================================================
+# INSIGHTS, OVERDUE ALERTS AND REPORT EXPORT
+# ======================================================================
+LOCAL_TZ = "Asia/Karachi"
+
+
+def get_sla():
+    return int(ss.get("sla_hours", 48))
+
+
+def to_ts(value):
+    return pd.to_datetime(value, utc=True)
+
+
+def age_hours(c):
+    return (pd.Timestamp.now(tz="UTC") - to_ts(c["created_at"])).total_seconds() / 3600
+
+
+def fmt_hours(hours):
+    hours = max(0, int(hours))
+    days, rem = divmod(hours, 24)
+    return f"{days}d {rem}h" if days else f"{rem}h"
+
+
+def is_overdue(c):
+    return c["status"] == "pending" and age_hours(c) > get_sla()
+
+
+def local_time(value):
+    return to_ts(value).tz_convert(LOCAL_TZ).strftime("%Y-%m-%d %H:%M")
+
+
+def safe_cell(value):
+    """Stops spreadsheet formula injection in exported CSV files."""
+    text = "" if value is None else str(value)
+    return "'" + text if text[:1] in ("=", "+", "-", "@") else text
+
+
+def report_df(rows):
+    return pd.DataFrame([{
+        "Ticket": c["id"][:8],
+        "Title": safe_cell(c["title"]),
+        "Category": c["category"],
+        "Department": c["department"],
+        "Student": safe_cell(c["student_name"]),
+        "Status": STATUS_LABELS[c["status"]],
+        "Overdue": "Yes" if is_overdue(c) else "No",
+        "Department response": safe_cell(c.get("remarks")),
+        "Submitted": local_time(c["created_at"]),
+        "Last update": local_time(c["updated_at"]) if c.get("updated_at") else "",
+    } for c in rows])
+
+
+def report_button(rows, key, label="⬇️ Download report (CSV)"):
+    if not rows:
+        return
+    csv = report_df(rows).to_csv(index=False).encode("utf-8-sig")
+    stamp = pd.Timestamp.now(tz=LOCAL_TZ).strftime("%Y%m%d_%H%M")
+    st.download_button(label, csv, file_name=f"campusconnect_report_{stamp}.csv",
+                       mime="text/csv", key=key)
+
+
+def insight_items(s, rows, is_super):
+    total = s["total"]
+    resolved = s["by_status"]["resolved"]
+    items = []
+    if s["by_category"]:
+        cat, n = max(s["by_category"].items(), key=lambda kv: kv[1])
+        plural = "s" if n != 1 else ""
+        items.append(("📌", f"Most reported issue: <b>{esc(cat)}</b> "
+                            f"({n} complaint{plural}, {round(100 * n / total)}% of all)."))
+    if is_super and s["by_department"]:
+        dept, n = max(s["by_department"].items(), key=lambda kv: kv[1])
+        plural = "s" if n != 1 else ""
+        items.append(("🏢", f"Busiest department: <b>{esc(dept)}</b> with {n} complaint{plural}."))
+    pending = s["by_status"]["pending"]
+    if pending:
+        items.append(("⏳", f"<b>{pending}</b> complaint(s) are still waiting for a first response."))
+    items.append(("✅", f"Resolution rate: <b>{round(100 * resolved / total)}%</b> "
+                        f"({resolved} of {total} resolved)."))
+    spans = [(to_ts(c["updated_at"]) - to_ts(c["created_at"])).total_seconds() / 3600
+             for c in rows if c["status"] == "resolved" and c.get("updated_at")]
+    if spans:
+        items.append(("⏱️", f"Average time to resolve: <b>{fmt_hours(sum(spans) / len(spans))}</b>."))
+    return items
+
+
+def attention_html(rows):
+    overdue = sorted([c for c in rows if is_overdue(c)], key=age_hours, reverse=True)
+    if not overdue:
+        return (f'<div class="alert-green">✅ No overdue complaints. Every pending complaint is '
+                f'younger than {get_sla()} hours.</div>')
+    top = "".join(
+        f'<div class="ovd"><div><div class="t">{esc(c["title"])}</div>'
+        f'<div class="m">{esc(c["department"])} · {esc(c["student_name"])}</div></div>'
+        f'<div class="age">Waiting {fmt_hours(age_hours(c))}</div></div>'
+        for c in overdue[:5])
+    more = len(overdue) - 5
+    tail = f'<div class="m" style="margin-top:6px">+ {more} more overdue</div>' if more > 0 else ""
+    return (f'<div class="alert-red">🚨 {len(overdue)} complaint(s) pending for more than '
+            f'{get_sla()} hours</div>{top}{tail}')
+
+
+def trend_chart(rows):
+    ts = pd.to_datetime([c["created_at"] for c in rows], utc=True).tz_convert(LOCAL_TZ)
+    days = ts.tz_localize(None).normalize()
+    counts = pd.Series(1, index=days).groupby(level=0).sum()
+    full = pd.date_range(counts.index.min(), counts.index.max(), freq="D")
+    df = pd.DataFrame({"Day": full, "Complaints": counts.reindex(full, fill_value=0).values})
+    base = alt.Chart(df).encode(
+        x=alt.X("Day:T", title=None,
+                axis=alt.Axis(format="%d %b", labelFontSize=12, grid=False, labelOverlap=True,
+                              tickCount={"interval": "day", "step": max(1, len(full) // 8)})),
+        y=alt.Y("Complaints:Q", title="Complaints submitted",
+                axis=alt.Axis(tickMinStep=1, format="d", gridColor="#EEF2F7", domain=False)),
+        tooltip=[alt.Tooltip("Day:T", format="%d %b %Y"), "Complaints"],
+    )
+    chart = (base.mark_area(color="#2563EB", opacity=0.12)
+             + base.mark_line(color="#2563EB", strokeWidth=3)
+             + base.mark_point(color="#2563EB", filled=True, size=70))
+    return chart.properties(height=240).configure(background="#FFFFFF").configure_view(strokeWidth=0)
 
 
 # ======================================================================
@@ -388,13 +529,26 @@ def admin_view():
 
     with t1:
         s = api("GET", "/admin/stats")
+        all_rows = api("GET", "/admin/complaints") or []
         if s:
             kpi_cards(s["total"], s["by_status"])
-            if s["total"] == 0:
-                st.info("No complaints yet. Charts appear as soon as students submit complaints.")
+            if s["total"] == 0 or not all_rows:
+                st.info("No complaints yet. Insights and charts appear as soon as students submit complaints.")
             else:
-                rate = round(100 * s["by_status"]["resolved"] / s["total"])
-                st.caption(f"Scope: {s['scope']}  ·  Resolution rate: {rate}%")
+                st.caption(f"Scope: {s['scope']}")
+                ins_col, att_col = st.columns(2)
+                with ins_col:
+                    with st.container(border=True, key="card_insights"):
+                        st.markdown("##### 💡 Smart insights")
+                        st.markdown("".join(
+                            f'<div class="ins"><span class="ic">{ic}</span><div>{txt}</div></div>'
+                            for ic, txt in insight_items(s, all_rows, is_super)),
+                            unsafe_allow_html=True)
+                with att_col:
+                    with st.container(border=True, key="card_attention"):
+                        st.markdown("##### 🚨 Needs attention")
+                        st.markdown(attention_html(all_rows), unsafe_allow_html=True)
+
                 left, right = st.columns(2)
                 with left:
                     with st.container(border=True, key="card_chart_a"):
@@ -408,10 +562,14 @@ def admin_view():
                     with st.container(border=True, key="card_chart_b"):
                         st.markdown("##### Complaints by status")
                         st.altair_chart(status_donut(s["by_status"]))
+                with st.container(border=True, key="card_trend"):
+                    st.markdown("##### Complaints over time")
+                    st.altair_chart(trend_chart(all_rows))
                 if is_super and s["by_category"]:
                     with st.container(border=True, key="card_chart_c"):
                         st.markdown("##### Most common issues (by category)")
                         st.altair_chart(bar_chart_h(s["by_category"], "#7C3AED"))
+                report_button(all_rows, "dl_dashboard", "⬇️ Download full report (CSV)")
 
     with t2:
         cats = api("GET", "/complaints/categories") or []
@@ -424,6 +582,7 @@ def admin_view():
             if is_super:
                 dept = f[3].selectbox("Department", ["All", "Cafeteria", "Library",
                                                      "Laboratory/IT", "Teaching/Academic"])
+            only_overdue = st.checkbox(f"Show overdue only (pending for more than {get_sla()} hours)")
         params = {}
         if status != "All":
             params["status"] = status
@@ -435,24 +594,31 @@ def admin_view():
             params["department"] = dept
 
         rows = api("GET", "/admin/complaints", params=params) or []
-        st.caption(f"{len(rows)} complaint(s)")
+        if only_overdue:
+            rows = [c for c in rows if is_overdue(c)]
+        info, dl = st.columns([4, 1.6])
+        info.caption(f"{len(rows)} complaint(s)")
+        with dl:
+            report_button(rows, "dl_manage")
         if rows:
             table = pd.DataFrame([{
-                "Status": f"{BADGE[c['status']]} {STATUS_LABELS[c['status']]}",
+                "Status": f"{BADGE[c['status']]} {STATUS_LABELS[c['status']]}"
+                          + ("  ⚠️ Overdue" if is_overdue(c) else ""),
                 "Title": c["title"],
                 "Department": c["department"],
                 "Student": c["student_name"],
-                "Submitted": c["created_at"][:16].replace("T", " "),
+                "Waiting": fmt_hours(age_hours(c)) if c["status"] in ("pending", "in_progress") else "—",
+                "Submitted": local_time(c["created_at"]),
             } for c in rows])
             st.dataframe(table, hide_index=True)
             st.markdown("##### Open a complaint to respond")
         else:
             st.info("No complaints match these filters.")
         for c in rows:
-            head = (f"{BADGE[c['status']]}  {c['title']}   ·   {c['department']}   ·   "
-                    f"{c['student_name']}")
+            icon = "⚠️" if is_overdue(c) else BADGE[c["status"]]
+            head = f"{icon}  {c['title']}   ·   {c['department']}   ·   {c['student_name']}"
             with st.expander(head):
-                st.caption(f"📂 {c['category']}   ·   🕒 {c['created_at'][:16].replace('T', ' ')}"
+                st.caption(f"📂 {c['category']}   ·   🕒 {local_time(c['created_at'])}"
                            f"   ·   Ticket #{c['id'][:8]}")
                 st.write(c["description"])
                 if c.get("image_url"):
@@ -487,6 +653,10 @@ def sidebar():
             f'<div class="sb-name">{esc(u.get("name"))}</div>'
             f'<div class="sb-role">{ROLE_LABELS.get(u["role"], u["role"])}</div>{dept_html}'
             f'</div></div>'), unsafe_allow_html=True)
+        if u["role"] != "student":
+            st.markdown('<div class="sb-sec">Alert settings</div>', unsafe_allow_html=True)
+            st.selectbox("Flag pending complaints as overdue after", [1, 6, 24, 48, 72],
+                         index=3, key="sla_hours", format_func=lambda x: f"{x} hours")
         if st.button("Sign out"):
             ss.token = ss.user = None
             st.rerun()
