@@ -556,6 +556,62 @@ def triage_html(t):
 # ======================================================================
 # STUDENT
 # ======================================================================
+
+# ---------------- Campus Health Score + Department Leaderboard ----------------
+def health_score(rows):
+    n = len(rows)
+    if not n:
+        return None
+    res = sum(1 for c in rows if c["status"] == "resolved")
+    rej = sum(1 for c in rows if c["status"] == "rejected")
+    done = res + rej
+    od = sum(1 for c in rows if is_overdue(c))
+    spans = [(to_ts(c["updated_at"]) - to_ts(c["created_at"])).total_seconds() / 3600
+             for c in rows if c["status"] in ("resolved", "rejected") and c.get("updated_at")]
+    avg = sum(spans) / len(spans) if spans else 0
+    handled = sum(1 for c in rows if c["status"] != "pending") / n
+    speed = max(0, 1 - min(avg, 72) / 72) if spans else 0.5
+    score = 40 * (done / n) + 25 * handled + 20 * (1 - od / n) + 15 * speed
+    return int(round(score)), res, od, avg
+
+def health_html(rows):
+    h_ = health_score(rows)
+    if not h_:
+        return ""
+    sc, res, od, avg = h_
+    col, lab = (("#16A34A", "Excellent") if sc >= 75 else ("#CA8A04", "Needs improvement") if sc >= 45 else ("#DC2626", "Critical"))
+    deg = int(sc * 3.6)
+    return (f"<div style='display:flex;align-items:center;gap:22px;flex-wrap:wrap'>"
+            f"<div style='width:130px;height:130px;border-radius:50%;background:conic-gradient({col} {deg}deg,#E2E8F0 0);display:flex;align-items:center;justify-content:center'>"
+            f"<div style='width:98px;height:98px;border-radius:50%;background:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center'>"
+            f"<div style='font-size:30px;font-weight:800;color:{col};line-height:1'>{sc}</div><div style='font-size:11px;color:#64748B'>out of 100</div></div></div>"
+            f"<div><div style='font-size:20px;font-weight:700;color:{col}'>{lab}</div>"
+            f"<div style='font-size:13px;color:#475569;margin-top:6px'>Based on resolution rate, response progress,<br>overdue complaints and average response time.</div>"
+            f"<div style='font-size:13px;color:#0F172A;margin-top:8px'>✅ {res} resolved &nbsp;·&nbsp; ⏰ {od} overdue &nbsp;·&nbsp; ⌛ avg response {fmt_hours(avg) if avg else 'n/a'}</div></div></div>")
+
+def leaderboard_html(rows):
+    out = []
+    for d in DEPARTMENTS_UI:
+        r = [c for c in rows if c["department"] == d]
+        h_ = health_score(r)
+        out.append((d, len(r), h_[0] if h_ else None))
+    out.sort(key=lambda x: (x[2] is None, -(x[2] or 0)))
+    medals = ["🥇", "🥈", "🥉", "4️⃣"]
+    html_ = ""
+    for i, (d, n, sc) in enumerate(out):
+        if sc is None:
+            bar, txt, col = 0, "no complaints", "#94A3B8"
+        else:
+            bar, txt, col = sc, f"{sc}/100", ("#16A34A" if sc >= 75 else "#CA8A04" if sc >= 45 else "#DC2626")
+        html_ += (f"<div style='display:flex;align-items:center;gap:10px;margin:10px 0'>"
+                  f"<div style='width:28px;font-size:18px'>{medals[i]}</div>"
+                  f"<div style='width:150px;font-weight:600;color:#0F172A'>{esc(d)}<div style='font-size:11px;color:#64748B;font-weight:400'>{n} complaint(s)</div></div>"
+                  f"<div style='flex:1;height:10px;background:#E2E8F0;border-radius:99px'><div style='height:10px;width:{bar}%;background:{col};border-radius:99px'></div></div>"
+                  f"<div style='width:70px;text-align:right;font-weight:700;color:{col}'>{txt}</div></div>")
+    return html_
+
+DEPARTMENTS_UI = ["Cafeteria", "Library", "Laboratory/IT", "Teaching/Academic"]
+
 def student_view():
     page_header("Student Portal", "Submit complaints and follow their progress.")
     t1, t2 = st.tabs(["📝  New Complaint", "📂  My Complaints"])
@@ -656,6 +712,20 @@ def admin_view():
                     with st.container(border=True, key="card_attention"):
                         st.markdown("##### 🚨 Needs attention")
                         st.markdown(attention_html(all_rows), unsafe_allow_html=True)
+
+                try:
+                    hc, lc = st.columns(2) if is_super else (st.container(), None)
+                    with hc:
+                        with st.container(border=True, key="card_health"):
+                            st.markdown("##### 🏆 Campus Health Score" if is_super else "##### 🏆 Department Health Score")
+                            st.markdown(health_html(all_rows), unsafe_allow_html=True)
+                    if lc is not None:
+                        with lc:
+                            with st.container(border=True, key="card_leader"):
+                                st.markdown("##### 🥇 Department leaderboard")
+                                st.markdown(leaderboard_html(all_rows), unsafe_allow_html=True)
+                except Exception:
+                    pass
 
                 left, right = st.columns(2)
                 with left:
