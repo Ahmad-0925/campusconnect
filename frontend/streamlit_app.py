@@ -478,6 +478,81 @@ def auth_screen():
     footer()
 
 
+
+# ---------------- Smart Triage Assistant (offline NLP, instant) ----------------
+import re as _re, difflib as _dl
+DEPT_KW = {
+    "Cafeteria": ["food","meal","canteen","cafeteria","lunch","tea","chai","rice","hygiene","stale","price","rate","juice","menu","dirty table","burger","samosa","water cooler","cockroach"],
+    "Library": ["library","book","books","librarian","reading","journal","issue card","borrow","return","seat","quiet","noise","catalog","magazine","thesis","fine"],
+    "Laboratory/IT": ["lab","computer","pc","wifi","wi-fi","internet","network","projector","software","printer","server","portal","login","lcd","mouse","keyboard","machine","equipment","lab assistant","hardware","slow"],
+    "Teaching/Academic": ["teacher","faculty","class","lecture","exam","paper","marks","result","attendance","timetable","schedule","syllabus","assignment","quiz","grading","professor","course","semester","fee"],
+}
+CRIT = ["fire","shock","electric","harass","threat","unsafe","injur","emergency","accident","poison","food poisoning","stuck","leak","flood","fight","bully"]
+HIGH = ["urgent","immediately","asap","broken","not working","damaged","dirty","no water","no electricity","since","days","weeks","again","repeated","never","worst"]
+NEG = ["worst","terrible","disgusting","horrible","frustrat","angry","unacceptable","useless","pathetic","fed up","tired of","ridiculous","rude"]
+STOP = set("the a an is are was were to of in on at for and or my our this that it with have has had not no be been very".split())
+
+def _tok(t):
+    return [w for w in _re.findall(r"[a-z0-9\-]+", t.lower()) if w not in STOP and len(w) > 2]
+
+def triage(text, my_rows):
+    text = (text or "").strip()
+    if len(text) < 12:
+        return None
+    low = text.lower()
+    scores = {d: sum(1 for k in kws if k in low) for d, kws in DEPT_KW.items()}
+    best = max(scores, key=scores.get)
+    tot = sum(scores.values())
+    dept = best if scores[best] > 0 else None
+    conf = int(100 * scores[best] / tot) if tot else 0
+    crit = [k for k in CRIT if k in low]
+    high = [k for k in HIGH if k in low]
+    prio = "Critical" if crit else ("High" if len(high) >= 2 else ("Medium" if high else "Normal"))
+    neg = sum(1 for k in NEG if k in low) + low.count("!")
+    tone = "Frustrated" if neg >= 2 else ("Concerned" if neg == 1 else "Calm")
+    q = 20
+    q += min(30, len(text) // 8)
+    if _re.search(r"\d", text): q += 15
+    if any(w in low for w in ["room","floor","block","building","lab","hall","counter","desk"]): q += 15
+    if any(w in low for w in ["today","yesterday","since","morning","evening","week","day","monday","tuesday","wednesday","thursday","friday"]): q += 15
+    q = min(q, 100)
+    tips = []
+    if q < 70:
+        if not any(w in low for w in ["room","floor","block","building","lab","hall","counter","desk"]): tips.append("add the exact location (room / block)")
+        if not any(w in low for w in ["today","yesterday","since","morning","evening","week","day"]): tips.append("mention when it happened")
+        if len(text) < 60: tips.append("add a little more detail")
+    dup = None
+    tk = set(_tok(text))
+    for c in my_rows:
+        o = set(_tok(c["title"] + " " + c["description"]))
+        if tk and o:
+            j = len(tk & o) / len(tk | o)
+            if j > 0.45 and c["status"] in ("pending", "in_progress"):
+                dup = (c["title"], c["id"][:8]); break
+    return dict(dept=dept, conf=conf, prio=prio, tone=tone, quality=q, tips=tips, dup=dup)
+
+def triage_html(t):
+    pc = {"Critical": "#DC2626", "High": "#EA580C", "Medium": "#CA8A04", "Normal": "#16A34A"}[t["prio"]]
+    qc = "#16A34A" if t["quality"] >= 70 else ("#CA8A04" if t["quality"] >= 45 else "#DC2626")
+    dept = (f"{esc(t['dept'])} <span style='color:#64748B;font-weight:500'>({t['conf']}% match)</span>"
+            if t["dept"] else "<span style='color:#64748B'>Detected from category on submit</span>")
+    tips = ("<div style='margin-top:8px;font-size:13px;color:#475569'>💡 To get a faster response: "
+            + ", ".join(t["tips"]) + ".</div>") if t["tips"] else ""
+    dup = (f"<div style='margin-top:8px;padding:8px 12px;background:#FEF3C7;border-radius:8px;font-size:13px;color:#92400E'>"
+           f"⚠️ Possible duplicate of your open complaint <b>{esc(dup0)}</b> (#{dup1}). Please check before submitting again.</div>"
+           if (t["dup"] and (dup0 := t["dup"][0]) and (dup1 := t["dup"][1])) else "")
+    return (f"<div style='border:1px solid #C7D2FE;background:linear-gradient(135deg,#EEF2FF,#F8FAFF);border-radius:14px;padding:16px 18px;margin:6px 0 14px'>"
+            f"<div style='font-weight:700;color:#1E3A8A;margin-bottom:10px'>🤖 Smart Triage Assistant "
+            f"<span style='font-size:11px;background:#1D4ED8;color:#fff;padding:2px 8px;border-radius:99px;margin-left:6px'>LIVE</span></div>"
+            f"<div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px'>"
+            f"<div><div style='font-size:12px;color:#64748B'>Routed to</div><div style='font-weight:700;color:#0F172A'>{dept}</div></div>"
+            f"<div><div style='font-size:12px;color:#64748B'>Priority</div><div style='font-weight:700;color:{pc}'>● {t['prio']}</div></div>"
+            f"<div><div style='font-size:12px;color:#64748B'>Tone</div><div style='font-weight:700;color:#0F172A'>{t['tone']}</div></div>"
+            f"<div><div style='font-size:12px;color:#64748B'>Complaint quality</div>"
+            f"<div style='font-weight:700;color:{qc}'>{t['quality']}/100</div>"
+            f"<div style='height:6px;background:#E2E8F0;border-radius:99px;margin-top:4px'><div style='height:6px;width:{t['quality']}%;background:{qc};border-radius:99px'></div></div></div>"
+            f"</div>{tips}{dup}</div>")
+
 # ======================================================================
 # STUDENT
 # ======================================================================
@@ -487,22 +562,37 @@ def student_view():
 
     with t1:
         cats = api("GET", "/complaints/categories") or []
-        with st.form("new_complaint", clear_on_submit=True):
-            st.markdown("##### Describe your issue")
-            st.caption("Your complaint is routed automatically to the responsible department.")
-            c1, c2 = st.columns(2)
-            cat = c1.selectbox("Category", cats)
-            title = c2.text_input("Title", placeholder="Short summary of the problem")
-            desc = st.text_area("Details", height=150,
-                                placeholder="What happened, where and when? (min. 10 characters)")
-            img = st.text_input("Supporting image link (optional)", placeholder="https://...")
-            if st.form_submit_button("Submit complaint", type="primary"):
-                d = api("POST", "/complaints", {
-                    "category": cat, "title": title,
-                    "description": desc, "image_url": img or None})
-                if d:
-                    st.success(f"Complaint submitted and routed to **{d['department']}**. "
+        mine = api("GET", "/complaints/mine") or []
+        n = ss.get("nc_n", 0)
+        if ss.get("nc_ok"):
+            st.success(ss.pop("nc_ok"))
+        st.markdown("##### Describe your issue")
+        st.caption("Type your complaint. The Smart Triage Assistant analyses it live and routes it automatically.")
+        c1, c2 = st.columns(2)
+        cat = c1.selectbox("Category", cats, key=f"nc_cat_{n}")
+        title = c2.text_input("Title", placeholder="Short summary of the problem", key=f"nc_title_{n}")
+        desc = st.text_area("Details", height=150, key=f"nc_desc_{n}",
+                            placeholder="What happened, where and when? (min. 10 characters)")
+        img = st.text_input("Supporting image link (optional)", placeholder="https://...", key=f"nc_img_{n}")
+        tri = None
+        try:
+            tri = triage(f"{title} {desc}", mine)
+            if tri:
+                st.markdown(triage_html(tri), unsafe_allow_html=True)
+        except Exception:
+            tri = None
+        if st.button("Submit complaint", type="primary", key=f"nc_btn_{n}"):
+            body = desc
+            if tri:
+                body = f"{desc}\n\n[Smart Triage: {tri['prio']} priority | tone: {tri['tone']} | quality {tri['quality']}/100]"
+            d = api("POST", "/complaints", {
+                "category": cat, "title": title,
+                "description": body, "image_url": img or None})
+            if d:
+                ss["nc_ok"] = (f"Complaint submitted and routed to **{d['department']}**. "
                                f"Ticket #{d['id'][:8]}")
+                ss["nc_n"] = n + 1
+                st.rerun()
 
     with t2:
         top = st.columns([4, 1.4, 1])
