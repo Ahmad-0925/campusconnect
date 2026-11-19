@@ -380,22 +380,39 @@ def attention_html(rows):
 
 
 def trend_chart(rows):
-    ts = pd.to_datetime([c["created_at"] for c in rows], utc=True).tz_convert(LOCAL_TZ)
-    days = ts.tz_localize(None).normalize()
-    counts = pd.Series(1, index=days).groupby(level=0).sum()
-    full = pd.date_range(counts.index.min(), counts.index.max(), freq="D")
-    df = pd.DataFrame({"Day": full, "Complaints": counts.reindex(full, fill_value=0).values})
-    base = alt.Chart(df).encode(
-        x=alt.X("Day:T", title=None,
-                axis=alt.Axis(format="%d %b", labelFontSize=12, grid=False, labelOverlap=True,
-                              tickCount={"interval": "day", "step": max(1, len(full) // 8)})),
-        y=alt.Y("Complaints:Q", title="Complaints submitted",
-                axis=alt.Axis(tickMinStep=1, format="d", gridColor="#EEF2F7", domain=False)),
-        tooltip=[alt.Tooltip("Day:T", format="%d %b %Y"), "Complaints"],
-    )
-    chart = (base.mark_area(color="#2563EB", opacity=0.12)
-             + base.mark_line(color="#2563EB", strokeWidth=3)
-             + base.mark_point(color="#2563EB", filled=True, size=70))
+    ts = pd.to_datetime([c["created_at"] for c in rows], utc=True).tz_convert(LOCAL_TZ).tz_localize(None)
+    one_day = ts.normalize().nunique() == 1
+
+    if one_day:  # everything arrived today: show complaints per hour as simple bars
+        counts = pd.Series(1, index=ts.floor("h")).groupby(level=0).sum()
+        full = pd.date_range(counts.index.min(), counts.index.max(), freq="h")
+        df = pd.DataFrame({"Hour": full.strftime("%H:%M"),
+                           "Complaints": counts.reindex(full, fill_value=0).values})
+        base = alt.Chart(df).encode(
+            x=alt.X("Hour:N", sort=list(df["Hour"]), title="Hour of the day (today)",
+                    axis=alt.Axis(labelAngle=0, labelFontSize=12, ticks=False)),
+            y=alt.Y("Complaints:Q", title="Complaints submitted",
+                    axis=alt.Axis(tickMinStep=1, format="d", gridColor="#EEF2F7", domain=False)),
+            tooltip=["Hour", "Complaints"],
+        )
+        bars = base.mark_bar(color="#2563EB", cornerRadiusEnd=5, size=38)
+        labels = base.mark_text(dy=-9, fontSize=13, fontWeight=600, color="#0F172A").encode(text="Complaints:Q")
+        chart = bars + labels
+    else:  # several days: trend line
+        counts = pd.Series(1, index=ts.normalize()).groupby(level=0).sum()
+        full = pd.date_range(counts.index.min(), counts.index.max(), freq="D")
+        df = pd.DataFrame({"Day": full, "Complaints": counts.reindex(full, fill_value=0).values})
+        base = alt.Chart(df).encode(
+            x=alt.X("Day:T", title=None,
+                    axis=alt.Axis(format="%d %b", labelFontSize=12, grid=False, labelOverlap=True,
+                                  tickCount={"interval": "day", "step": max(1, len(full) // 8)})),
+            y=alt.Y("Complaints:Q", title="Complaints submitted",
+                    axis=alt.Axis(tickMinStep=1, format="d", gridColor="#EEF2F7", domain=False)),
+            tooltip=[alt.Tooltip("Day:T", format="%d %b %Y"), "Complaints"],
+        )
+        chart = (base.mark_area(color="#2563EB", opacity=0.12)
+                 + base.mark_line(color="#2563EB", strokeWidth=3)
+                 + base.mark_point(color="#2563EB", filled=True, size=70))
     return chart.properties(height=240).configure(background="#FFFFFF").configure_view(strokeWidth=0)
 
 
