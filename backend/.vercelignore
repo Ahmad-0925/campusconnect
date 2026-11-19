@@ -1,0 +1,5 @@
+venv
+.env
+__pycache__
+check_env.py
+test_api.ps1

@@ -1,0 +1,8 @@
+fastapi
+pydantic[email]
+pydantic-settings
+httpx
+bcrypt
+pyjwt
+python-multipart
+uvicorn
