@@ -317,6 +317,7 @@ def report_df(rows):
     return pd.DataFrame([{
         "Ticket": c["id"][:8],
         "Title": safe_cell(c["title"]),
+        "Description": safe_cell(c["description"]),
         "Category": c["category"],
         "Department": c["department"],
         "Student": safe_cell(c["student_name"]),
