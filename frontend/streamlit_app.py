@@ -638,10 +638,21 @@ def send_status_email(to, c, status, remarks):
             f"Department: {c['department']}\n"
             f"Response: {remarks or 'No remarks yet.'}\n\n"
             f"Log in to CampusConnect to see the full details.\n\n- CampusConnect Team")
-        with _smtp.SMTP_SSL("smtp.gmail.com", 465, timeout=15) as srv:
-            srv.login(user, pw)
-            srv.send_message(msg)
-        return True, ""
+        errs = []
+        for mode in ("starttls587", "ssl465"):
+            try:
+                if mode == "starttls587":
+                    srv = _smtp.SMTP("smtp.gmail.com", 587, timeout=20)
+                    srv.ehlo(); srv.starttls(); srv.ehlo()
+                else:
+                    srv = _smtp.SMTP_SSL("smtp.gmail.com", 465, timeout=20)
+                srv.login(user, pw.replace(" ", ""))
+                srv.send_message(msg)
+                srv.quit()
+                return True, ""
+            except Exception as e:
+                errs.append(f"{mode}: {type(e).__name__} {str(e)[:70]}")
+        return False, " | ".join(errs)
     except Exception as e:
         return False, f"{type(e).__name__}: {str(e)[:120]}"
 
